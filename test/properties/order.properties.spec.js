@@ -4,7 +4,7 @@ const { subtotal } = require('../../src/subtotal');
 const { discounts } = require('../../src/discounts');
 const { total } = require('../../src/total');
 const { tax } = require('../../src/tax');
-const { delivery } = require('../../src/delivery');
+const { deliveryFee } = require('../../src/delivery');
 
 // These arbitrary generators provide primitive building blocks for constructing orders and contexts in property-based tests
 //
@@ -38,6 +38,24 @@ const orderArb = fc.record({
   items: fc.array(orderItemArb, { minLength: 1, maxLength: 5 })
 });
 
+// Arbitraries for the context object (profile, delivery, coupon)
+const profileArb = fc.record({
+  tier: tierArb  // 'guest', 'regular', or 'vip'
+});
+
+const deliveryArb = fc.record({
+  zone: zoneArb,  // 'local' or 'outer'
+  rush: fc.boolean()  // true or false for rush delivery
+});
+
+const contextArb = fc.record({
+  profile: profileArb,
+  delivery: deliveryArb,
+  coupon: fc.oneof(
+    fc.constant(null),
+    fc.constantFrom('PIEROGI-BOGO', 'FIRST10')
+  )
+});
 
 // ------------------------------------------------------------------------------
 // To test discounts, tax, delivery and total, you will need to add more
@@ -61,6 +79,37 @@ describe('Property-Based Tests for Orders', () => {
         fc.property(orderArb, (order) => {
           const result = subtotal(order);
           return result >= 0 && Number.isInteger(result);
+        }),
+        { numRuns: 50 }
+      );
+    });
+
+    it('total should always be non-negative integer', () => {
+      fc.assert(
+        fc.property(orderArb, contextArb, (order, context) => {
+          const result = total(order, context);
+          return result >= 0 && Number.isInteger(result);
+        }),
+        { numRuns: 50 }
+      );
+    });
+
+    it('vip orders should have free delivery for orders over $30 after discounts', () => {
+      fc.assert(
+        fc.property(orderArb, deliveryArb , (order, delivery) => {
+          const profile = { tier: 'vip' };
+          const orderSubtotal = subtotal(order);
+          const orderDiscounts = discounts(order, profile, null);
+          const discountedSubtotal = orderSubtotal - orderDiscounts;      
+          const deliveryCost = deliveryFee(order, delivery, profile);
+          // VIP gets free delivery if discounted subtotal is > $30 (3000 cents)
+          // With rush, they still pay 299 cents
+          if (discountedSubtotal > 3000) {
+            return delivery.rush ? deliveryCost === 299 : deliveryCost === 0;
+          } else {
+            // Below threshold, should pay base fee + optional rush fee
+            return deliveryCost > 0;
+          }
         }),
         { numRuns: 50 }
       );
